@@ -26,7 +26,6 @@ const DB_URL='https://barr-e92f4-default-rtdb.firebaseio.com';
 const KEY='miniBarOsascoV3';
 let db={products:[],moves:[],customers:[],comandas:[]};
 let firebaseOnline=false, syncTimer=null, eventSource=null, saving=false;
-let reconnectAttempts = 0; // Contador de tentativas
 
 const emptyDB=()=>({products:[],moves:[],customers:[],comandas:[]});
 function normalize(data){
@@ -43,34 +42,12 @@ function updateConnectionStatus(state=firebaseOnline?'online':'offline'){
   if(!el){el=document.createElement('div');el.id='dbStatus';el.style='position:fixed;right:18px;bottom:16px;background:#fff;border:1px solid #ddd;border-radius:10px;padding:8px 12px;font-size:12px;font-weight:700;box-shadow:0 3px 12px #0001;z-index:30';document.body.appendChild(el)}
   const map={online:['● Banco online','#23733a'],connecting:['● Conectando ao banco…','#8a5b00'],offline:['● Offline — dados locais','#a52d2d']};
   const [txt,col]=map[state]||map.offline;el.textContent=txt;el.style.color=col;
-
-  // Se estiver offline, adiciona botão de reconectar manualmente
-  if(state === 'offline'){
-    if(!document.getElementById('retryBtn')){
-      const btn = document.createElement('button');
-      btn.id = 'retryBtn';
-      btn.textContent = '↻';
-      btn.title = 'Tentar conectar agora';
-      btn.style.cssText = 'background:none;border:0;font-size:14px;margin-left:6px;cursor:pointer;color:inherit;font-weight:bold';
-      btn.onclick = () => {
-        reconnectAttempts = 0;
-        startStream();
-        load();
-      };
-      el.appendChild(btn);
-    }
-  } else {
-    const btn = document.getElementById('retryBtn');
-    if(btn) btn.remove();
-  }
 }
-
 async function restGet(){const r=await fetch(DB_URL+'/.json',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);return await r.json()}
 async function restPatch(patch){
   const r=await fetch(DB_URL+'/.json',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)});
   if(!r.ok)throw new Error('HTTP '+r.status); return true;
 }
-
 async function save(){
   localSave();
   clearTimeout(syncTimer);
@@ -79,75 +56,31 @@ async function save(){
     try{
       await restPatch({products:db.products,moves:db.moves,customers:db.customers,comandas:db.comandas});
       firebaseOnline=true;
-      reconnectAttempts = 0; // Reseta tentativas ao ter sucesso
       updateConnectionStatus('online');
-    }catch(e){
-      firebaseOnline=false;
-      updateConnectionStatus('offline');
-      // Reconexão automática agendada para salvar (se falhar)
-      setTimeout(save, 3000);
-    }
+    }catch(e){firebaseOnline=false;updateConnectionStatus('offline');}
     finally{saving=false;}
   },120);
 }
-
 function mergeRemote(remote){
   if(!remote||typeof remote!=='object') return;
   db=normalize(remote);localSave();renderAll();
 }
-
 function startStream(){
   if(eventSource)eventSource.close();
   updateConnectionStatus('connecting');
-  
   try{
     eventSource=new EventSource(DB_URL+'/.json');
-    eventSource.addEventListener('put',ev=>{try{const d=JSON.parse(ev.data);mergeRemote(d.data);firebaseOnline=true;reconnectAttempts=0;updateConnectionStatus('online')}catch(e){}});
-    eventSource.addEventListener('patch',ev=>{try{const d=JSON.parse(ev.data); if(d.path==='/'){mergeRemote(d.data)} else {restGet().then(mergeRemote).catch(()=>{});} firebaseOnline=true;reconnectAttempts=0;updateConnectionStatus('online')}catch(e){}});
-    
-    eventSource.onopen=()=>{
-      firebaseOnline=true;
-      reconnectAttempts=0;
-      updateConnectionStatus('online');
-    };
-    
-    eventSource.onerror=()=>{
-      firebaseOnline=false;
-      updateConnectionStatus('offline');
-      eventSource.close();
-      
-      // Backoff exponencial: 1s, 2s, 4s, 8s... máx 30s
-      const delay = Math.min(30000, 1000 * Math.pow(2, reconnectAttempts));
-      reconnectAttempts++;
-      
-      setTimeout(startStream, delay);
-    };
-  }catch(e){
-    firebaseOnline=false;
-    updateConnectionStatus('offline');
-    setTimeout(startStream, 3000);
-  }
+    eventSource.addEventListener('put',ev=>{try{const d=JSON.parse(ev.data);mergeRemote(d.data);firebaseOnline=true;updateConnectionStatus('online')}catch(e){}});
+    eventSource.addEventListener('patch',ev=>{try{const d=JSON.parse(ev.data); if(d.path==='/'){mergeRemote(d.data)} else {restGet().then(mergeRemote).catch(()=>{});} firebaseOnline=true;updateConnectionStatus('online')}catch(e){}});
+    eventSource.onerror=()=>{firebaseOnline=false;updateConnectionStatus('offline');};
+    eventSource.onopen=()=>{firebaseOnline=true;updateConnectionStatus('online');};
+  }catch(e){firebaseOnline=false;updateConnectionStatus('offline');}
 }
-
 async function load(){
   localLoad();renderAll();updateConnectionStatus('connecting');
-  try{
-    const remote=await restGet();
-    if(remote&&typeof remote==='object'){
-      mergeRemote(remote);
-    }
-    firebaseOnline=true;
-    reconnectAttempts=0;
-    updateConnectionStatus('online');
-    startStream();
-  }
-  catch(e){
-    firebaseOnline=false;
-    updateConnectionStatus('offline');
-    startStream();
-  }
+  try{const remote=await restGet();if(remote&&typeof remote==='object'){mergeRemote(remote);}firebaseOnline=true;updateConnectionStatus('online');startStream();}
+  catch(e){firebaseOnline=false;updateConnectionStatus('offline');startStream();}
 }
-
 function money(n){return Number(n||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}
 function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function show(id,btn){document.querySelectorAll('main>section').forEach(s=>s.classList.add('hidden'));document.getElementById(id).classList.remove('hidden');document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));if(btn)btn.classList.add('active');renderAll()}
